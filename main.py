@@ -3,7 +3,8 @@ import email
 import time
 from client_secrets import client_id, client_password, bot_token, bot_chatID 
 from email.header import make_header, decode_header
-import requests 
+import requests
+from bs4 import BeautifulSoup
 
 def telegram_bot_sendtext(bot_message):
     send_text = 'https://api.telegram.org/bot' + bot_token + '/sendMessage?chat_id=' + bot_chatID + '&parse_mode=Markdown&text=' + bot_message
@@ -19,17 +20,32 @@ def mail_handler(mail, mail_id):
             email_subject = msg['subject']
             email_from = msg['from']
             email_from = 'From : '+str(make_header(decode_header(email_from)))
-            email_subject = 'Subject : ' + email_subject
+            if 'Google' in email_from:
+                return # No quiero el spam de google :)
+            email_subject = 'Subject : ' + str(make_header(decode_header(email_subject)))
             if msg.is_multipart():
+                aux = ''
                 for payload in msg.get_payload():
                     # if payload.is_multipart(): ...
                     body = payload.get_payload(decode=True)
-                    body = body.decode('utf-8')
+                    try:
+                        body = body.decode('utf-8').replace('#','').replace('*','')
+                    except:
+                        body = 'Picture'
+                        # TODO Handle pictures
+                    aux += body + '\n'
                     break
+                body = aux
             else:
                 body = msg.get_payload(decode=True)
-                body = body.decode('utf-8')
-            telegram_bot_sendtext(email_from+'%0A'+email_subject+'%0A'+body)
+                try:
+                    body = body.decode('utf-8')
+                except:
+                    body = ''
+            raw = BeautifulSoup(body, features="html.parser")
+            message_to_send = (email_from+'\n'+email_subject+'\n\n'+raw.text)[:4096]
+            print(message_to_send)
+            print(telegram_bot_sendtext(message_to_send))
 
 
 def read_email_from_gmail():
@@ -54,4 +70,4 @@ def read_email_from_gmail():
 # nothing to print here
 while(True):
     read_email_from_gmail()
-    time.sleep(60)
+    time.sleep(15)
