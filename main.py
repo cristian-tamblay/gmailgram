@@ -1,73 +1,104 @@
-import imaplib
+# import the required libraries
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+import pickle
+import os.path
+import base64
 import email
-import time
-from client_secrets import client_id, client_password, bot_token, bot_chatID 
-from email.header import make_header, decode_header
-import requests
 from bs4 import BeautifulSoup
+import traceback
+from client_secrets import bot_token, bot_chatID
+import time
+
+# Define the SCOPES. If modifying it, delete the token.pickle file.
+SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.modify']
 
 def telegram_bot_sendtext(bot_message):
-    send_text = 'https://api.telegram.org/bot' + bot_token + '/sendMessage?chat_id=' + bot_chatID + '&parse_mode=Markdown&text=' + bot_message
+    send_text = 'https://api.telegram.org/bot' + bot_token + '/sendMessage?chat_id=' + bot_chatID + '&parse_mode=Markdown&text=' + bot_message[0:4095]
     response = requests.get(send_text)
     return response.json()
 
-def mail_handler(mail, mail_id):
-    result, data = mail.fetch(str(mail_id), '(RFC822)')
-    mail.store(str(mail_id), '+FLAGS', '(\Seen)')
-    for response_part in data:
-        if isinstance(response_part, tuple):
-            msg = email.message_from_bytes(response_part[1])
-            email_subject = msg['subject']
-            email_from = msg['from']
-            email_from = 'From : '+str(make_header(decode_header(email_from)))
-            if 'Google' in email_from:
-                return # No quiero el spam de google :)
-            email_subject = 'Subject : ' + str(make_header(decode_header(email_subject)))
-            if msg.is_multipart():
-                aux = ''
-                for payload in msg.get_payload():
-                    # if payload.is_multipart(): ...
-                    body = payload.get_payload(decode=True)
-                    try:
-                        body = body.decode('utf-8').replace('#','').replace('*','')
-                    except:
-                        body = 'Picture'
-                        # TODO Handle pictures
-                    aux += body + '\n'
-                    break
-                body = aux
-            else:
-                body = msg.get_payload(decode=True)
-                try:
-                    body = body.decode('utf-8')
-                except:
-                    body = ''
-            raw = BeautifulSoup(body, features="html.parser")
-            message_to_send = (email_from+'\n'+email_subject+'\n\n'+raw.text)[:4096]
-            print(message_to_send)
-            print(telegram_bot_sendtext(message_to_send))
 
-
-def read_email_from_gmail():
-        mail = imaplib.IMAP4_SSL('imap.gmail.com')
-        mail.login(client_id,client_password)
-        mail.select('inbox')
-
-        result, data = mail.search(None, '(UNSEEN)')
-        mail_ids = data[0]
-
-        id_list = mail_ids.split()
-        if len(id_list) == 0:
-            return
-        first_email_id = int(id_list[0])
-        latest_email_id = int(id_list[-1])
-        if first_email_id == latest_email_id:
-            mail_handler(mail, first_email_id)
+def getEmails():
+    # Variable creds will store the user access token.
+    # If no valid token found, we will create one.
+    creds = None
+  
+    # The file token.pickle contains the user access token.
+    # Check if it exists
+    if os.path.exists('token.pickle'):
+  
+        # Read the token from the file and store it in the variable creds
+        with open('token.pickle', 'rb') as token:
+            creds = pickle.load(token)
+  
+    # If credentials are not available or are invalid, ask the user to log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
         else:
-            for i in range(latest_email_id,first_email_id, -1):
-                mail_handler(mail, i)
-        mail.logout() # Log out. Still connected.
-# nothing to print here
+            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+  
+        # Save the access token in token.pickle file for the next run
+        with open('token.pickle', 'wb') as token:
+            pickle.dump(creds, token)
+  
+    # Connect to the Gmail API
+    service = build('gmail', 'v1', credentials=creds)
+  
+    # request a list of all the messages
+    result = service.users().messages().list(userId='me', labelIds=['UNREAD'], maxResults=1).execute()
+    # We can also pass maxResults to get any number of emails. Like this:
+    # result = service.users().messages().list(maxResults=200, userId='me').execute()
+    messages = result.get('messages')
+    # messages is a list of dictionaries where each dictionary contains a message id.
+    # iterate through all the messages
+    if(messages == None):
+        print("No new e-mails")
+        return
+    for msg in messages:
+        # Get the message from its id
+        txt = service.users().messages().get(userId='me', id=msg['id']).execute()
+        # Use try-except to avoid any Errors
+        try:
+            # Get value of 'payload' from dictionary 'txt'
+            payload = txt['payload']
+            headers = payload['headers']
+  
+            # Look for Subject and Sender Email in the headers
+            for d in headers:
+                if d['name'] == 'Subject':
+                    subject = d['value']
+                if d['name'] == 'From':
+                    sender = d['value']
+  
+            # The Body of the message is in Encrypted format. So, we have to decode it.
+            # Get the data and decode it with base 64 decoder.
+            try:
+                parts = payload.get('parts')[0]
+            except:
+                parts = payload
+            data = parts['body']['data']
+            data = data.replace("-","+").replace("_","/")
+            decoded_data = base64.b64decode(data)
+            # Now, the data obtained is in lxml. So, we will parse 
+            # it with BeautifulSoup library
+            soup = BeautifulSoup(decoded_data, "lxml")
+            body = soup.get_text()
+            # Printing the subject, sender's email and message
+            print("Subject: ", subject)
+            print("From: ", sender)
+            print("Message: ", body)
+            print('\n')
+            bot_text = "From: "+sender+"\n"+"Subject: "+subject+"\n"+body
+            #telegram_bot_sendtext(bot_text)
+            service.users().messages().modify(userId='me', id=msg['id'], body={'removeLabelIds': ['UNREAD']}).execute()
+        except Exception as e:
+            print(traceback.format_exc())
+            return
+  
 while(True):
-    read_email_from_gmail()
-    time.sleep(15)
+    getEmails()
+    time.sleep(15) 
